@@ -63,6 +63,89 @@ CREATE TABLE IF NOT EXISTS audit_events (
     event_hash TEXT NOT NULL UNIQUE,
     occurred_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS evidence (
+    evidence_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL REFERENCES sites(site_id),
+    evidence_key TEXT NOT NULL,
+    evidence_type TEXT NOT NULL,
+    version INTEGER NOT NULL CHECK(version >= 1),
+    payload_json TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('active', 'expired', 'retracted')),
+    supersedes TEXT,
+    replaced_by TEXT,
+    expires_at TEXT,
+    retraction_reason TEXT NOT NULL DEFAULT '',
+    retracted_by TEXT NOT NULL DEFAULT '',
+    retracted_at TEXT,
+    created_by TEXT NOT NULL REFERENCES actors(actor_id),
+    created_at TEXT NOT NULL,
+    UNIQUE(site_id, evidence_key, version),
+    UNIQUE(site_id, evidence_key, evidence_type, payload_hash)
+);
+CREATE TABLE IF NOT EXISTS evidence_links (
+    source_id TEXT NOT NULL REFERENCES evidence(evidence_id),
+    target_id TEXT NOT NULL REFERENCES evidence(evidence_id),
+    relation TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(source_id, target_id, relation)
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_links_target ON evidence_links(target_id);
+CREATE TABLE IF NOT EXISTS runs (
+    run_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL REFERENCES sites(site_id),
+    client_run_key TEXT NOT NULL,
+    dataset_id TEXT NOT NULL REFERENCES evidence(evidence_id),
+    parameters_id TEXT NOT NULL REFERENCES evidence(evidence_id),
+    result_id TEXT REFERENCES evidence(evidence_id),
+    note TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL REFERENCES actors(actor_id),
+    created_at TEXT NOT NULL,
+    UNIQUE(site_id, client_run_key)
+);
+CREATE INDEX IF NOT EXISTS idx_runs_site ON runs(site_id);
+CREATE INDEX IF NOT EXISTS idx_runs_dataset ON runs(dataset_id);
+CREATE INDEX IF NOT EXISTS idx_runs_result ON runs(result_id);
+CREATE TABLE IF NOT EXISTS conclusions (
+    conclusion_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL REFERENCES sites(site_id),
+    conclusion_key TEXT NOT NULL,
+    version INTEGER NOT NULL CHECK(version >= 1),
+    title TEXT NOT NULL,
+    content_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('draft', 'invalidated', 'superseded', 'published')),
+    supersedes TEXT,
+    published_at TEXT,
+    invalidated_at TEXT,
+    invalidation_json TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL REFERENCES actors(actor_id),
+    created_at TEXT NOT NULL,
+    UNIQUE(site_id, conclusion_key, version)
+);
+CREATE TABLE IF NOT EXISTS conclusion_basis (
+    conclusion_id TEXT NOT NULL REFERENCES conclusions(conclusion_id),
+    evidence_id TEXT NOT NULL REFERENCES evidence(evidence_id),
+    basis_role TEXT NOT NULL,
+    snapshot_hash TEXT,
+    PRIMARY KEY(conclusion_id, evidence_id)
+);
+CREATE INDEX IF NOT EXISTS idx_basis_evidence ON conclusion_basis(evidence_id);
+CREATE TABLE IF NOT EXISTS impact_statements (
+    statement_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL,
+    trigger_evidence_id TEXT NOT NULL,
+    trigger_status TEXT NOT NULL,
+    conclusion_id TEXT,
+    run_id TEXT,
+    scope TEXT NOT NULL CHECK(scope IN ('draft_invalidated', 'published_preserved', 'run_affected')),
+    message TEXT NOT NULL,
+    detail_json TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_impact_trigger ON impact_statements(trigger_evidence_id);
+CREATE INDEX IF NOT EXISTS idx_impact_conclusion ON impact_statements(conclusion_id);
+CREATE INDEX IF NOT EXISTS idx_impact_run ON impact_statements(run_id);
 """
 
 
