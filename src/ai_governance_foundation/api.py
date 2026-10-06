@@ -9,11 +9,11 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .errors import DomainError, ValidationError
-from .service import DomainService
+from .lineage import EvidenceLineageService
 from .storage import Database
 
 
-def route(service: DomainService, method: str, path: str, body: dict[str, Any] | None,
+def route(service: EvidenceLineageService, method: str, path: str, body: dict[str, Any] | None,
           headers: dict[str, str] | None = None) -> tuple[int, dict[str, Any]]:
     """把一个 HTTP 语义请求分派到领域服务。"""
 
@@ -21,6 +21,7 @@ def route(service: DomainService, method: str, path: str, body: dict[str, Any] |
     body = body or {}
     parsed = urlparse(path)
     actor_id = headers.get("X-Actor-Id", "")
+    segments = [segment for segment in parsed.path.split("/") if segment]
     try:
         if method == "GET" and parsed.path == "/health":
             valid, count = service.verify_audit()
@@ -48,6 +49,53 @@ def route(service: DomainService, method: str, path: str, body: dict[str, Any] |
             query = parse_qs(parsed.query)
             after = int(query.get("after_sequence", ["0"])[0])
             return 200, {"items": service.audit_events(after)}
+        if method == "POST" and segments == ["datasets"]:
+            receipt = service.register_dataset(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if len(segments) == 3 and segments[0] == "datasets" and segments[2] == "versions":
+            if method == "POST":
+                receipt = service.register_dataset_version(actor_id=actor_id,
+                                                           dataset_id=segments[1], **body)
+                return 200 if receipt.replayed else 201, receipt.__dict__
+            if method == "GET":
+                return 200, {"items": service.list_dataset_versions(actor_id, segments[1])}
+        if (method == "POST" and len(segments) == 5 and segments[0] == "datasets"
+                and segments[2] == "versions" and segments[4] == "status"):
+            receipt = service.set_dataset_version_status(actor_id=actor_id, dataset_id=segments[1],
+                                                         version=int(segments[3]), **body)
+            return 200, receipt.__dict__
+        if method == "POST" and segments == ["runs"]:
+            receipt = service.import_run(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "GET" and len(segments) == 2 and segments[0] == "runs":
+            return 200, service.get_run(actor_id, segments[1])
+        if method == "POST" and len(segments) == 3 and segments[0] == "runs" and segments[2] == "status":
+            receipt = service.set_run_status(actor_id=actor_id, run_id=segments[1], **body)
+            return 200, receipt.__dict__
+        if method == "POST" and segments == ["judgments"]:
+            receipt = service.record_judgment(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if (method == "POST" and len(segments) == 3
+                and segments[0] == "judgments" and segments[2] == "status"):
+            receipt = service.set_judgment_status(actor_id=actor_id, judgment_id=segments[1], **body)
+            return 200, receipt.__dict__
+        if method == "POST" and segments == ["conclusions"]:
+            receipt = service.create_conclusion(actor_id=actor_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "GET" and len(segments) == 2 and segments[0] == "conclusions":
+            return 200, service.get_conclusion(actor_id, segments[1])
+        if (method == "POST" and len(segments) == 3
+                and segments[0] == "conclusions" and segments[2] == "revise"):
+            receipt = service.revise_conclusion(actor_id=actor_id, conclusion_id=segments[1], **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if (method == "POST" and len(segments) == 3
+                and segments[0] == "conclusions" and segments[2] == "publish"):
+            receipt = service.publish_conclusion(actor_id=actor_id, conclusion_id=segments[1], **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "GET" and len(segments) == 3 and segments[0] == "conclusions" and segments[2] == "runs":
+            query = parse_qs(parsed.query)
+            affected_only = query.get("affected_only", ["false"])[0].lower() in ("true", "1", "yes")
+            return 200, service.conclusion_runs(actor_id, segments[1], affected_only)
         return 404, {"error": "route_not_found", "message": "接口不存在"}
     except DomainError as exc:
         return exc.status, {"error": exc.code, "message": str(exc)}
@@ -58,7 +106,7 @@ def route(service: DomainService, method: str, path: str, body: dict[str, Any] |
 class Handler(BaseHTTPRequestHandler):
     """把标准库 HTTP 请求转换为路由调用。"""
 
-    service: DomainService
+    service: EvidenceLineageService
 
     def _handle(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
@@ -93,13 +141,13 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> int:
     """启动本地 HTTP 服务。"""
 
-    parser = argparse.ArgumentParser(description="启动科技战略协作基础服务")
+    parser = argparse.ArgumentParser(description="启动安全评估证据谱系服务")
     parser.add_argument("--database", default="service.sqlite3")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
     args = parser.parse_args()
     database = Database(args.database)
-    Handler.service = DomainService(database)
+    Handler.service = EvidenceLineageService(database)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     try:
         server.serve_forever()
